@@ -38,7 +38,7 @@
 #include "radar_ego_velocity_estimator.h"
 #include "rio_utils/radar_point_cloud.h"
 #include "utility_radar.h"
-
+#include <sensor_msgs/point_cloud2_iterator.h>
 using namespace std;
 
 namespace radar_graph_slam {
@@ -264,8 +264,7 @@ private:
     }
   }
 
-  void cloud_callback(const sensor_msgs::PointCloud::ConstPtr&  eagle_msg) { // const pcl::PointCloud<PointT>& src_cloud_r
-    
+  void cloud_callback(const sensor_msgs::PointCloud2::ConstPtr& eagle_msg) {
     RadarPointCloudType radarpoint_raw;
     PointT radarpoint_xyzi;
     pcl::PointCloud<RadarPointCloudType>::Ptr radarcloud_raw( new pcl::PointCloud<RadarPointCloudType> );
@@ -274,30 +273,37 @@ private:
     radarcloud_xyzi->header.frame_id = baselinkFrame;
     radarcloud_xyzi->header.seq = eagle_msg->header.seq;
     radarcloud_xyzi->header.stamp = eagle_msg->header.stamp.toSec() * 1e6;
-    for(int i = 0; i < eagle_msg->points.size(); i++)
-    {
-        // cout << i << ":    " <<eagle_msg->points[i].x<<endl;
-        if(eagle_msg->channels[2].values[i] > power_threshold) //"Power"
-        {
-            if (eagle_msg->points[i].x == NAN || eagle_msg->points[i].y == NAN || eagle_msg->points[i].z == NAN) continue;
-            if (eagle_msg->points[i].x == INFINITY || eagle_msg->points[i].y == INFINITY || eagle_msg->points[i].z == INFINITY) continue;
-            cv::Mat ptMat, dstMat;
-            ptMat = (cv::Mat_<double>(4, 1) << eagle_msg->points[i].x, eagle_msg->points[i].y, eagle_msg->points[i].z, 1);    
-            // Perform matrix multiplication and save as Mat_ for easy element access
-            dstMat= Radar_to_livox * ptMat;
-            radarpoint_raw.x = dstMat.at<double>(0,0);
-            radarpoint_raw.y = dstMat.at<double>(1,0);
-            radarpoint_raw.z = dstMat.at<double>(2,0);
+
+    const float MIN_SNR = 13.0;
+
+    sensor_msgs::PointCloud2ConstIterator<float> iter_x(*eagle_msg, "x");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_y(*eagle_msg, "y");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_z(*eagle_msg, "z");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_snr(*eagle_msg, "snr"); 
+
+    for(; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z, ++iter_snr) {
+        
+        if (!std::isfinite(*iter_x)||!std::isfinite(*iter_y) || !std::isfinite(*iter_z)) continue;
+        if (std::isnan(*iter_x) || std::isnan(*iter_y) || std::isnan(*iter_z)) continue;
+
+        if (*iter_snr < MIN_SNR) continue;
+
+        cv::Mat ptMat, dstMat;
+        ptMat = (cv::Mat_<double>(4, 1) << *iter_x, *iter_y, *iter_z, 1);    
+        dstMat = Radar_to_livox * ptMat;
+
+        radarpoint_raw.x = dstMat.at<double>(0,0);
+        radarpoint_raw.y = dstMat.at<double>(1,0);
+        radarpoint_raw.z = dstMat.at<double>(2,0);
             radarpoint_raw.intensity = eagle_msg->channels[2].values[i];
             radarpoint_raw.doppler = eagle_msg->channels[0].values[i];
-            radarpoint_xyzi.x = dstMat.at<double>(0,0);
-            radarpoint_xyzi.y = dstMat.at<double>(1,0);
-            radarpoint_xyzi.z = dstMat.at<double>(2,0);
+        radarpoint_xyzi.x = dstMat.at<double>(0,0);
+        radarpoint_xyzi.y = dstMat.at<double>(1,0);
+        radarpoint_xyzi.z = dstMat.at<double>(2,0);
             radarpoint_xyzi.intensity = eagle_msg->channels[2].values[i];
 
-            radarcloud_raw->points.push_back(radarpoint_raw);
-            radarcloud_xyzi->points.push_back(radarpoint_xyzi);
-        }
+        radarcloud_raw->points.push_back(radarpoint_raw);
+        radarcloud_xyzi->points.push_back(radarpoint_xyzi);
     }
 
     //********** Publish PointCloud2 Format Raw Cloud **********

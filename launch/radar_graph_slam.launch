@@ -22,7 +22,7 @@
   <arg name="enable_loop_closure" default="false" />
   
   <!-- ICP NDT_OMP FAST_GICP FAST_APDGICP FAST_VGICP   -->
-  <arg name="registration_method" default="FAST_APDGICP" />
+  <arg name="registration_method" default="FAST_VGICP" />
   <arg name="reg_resolution" default="1.0" />
   
   <arg name="dist_var" default="0.86" />
@@ -33,13 +33,15 @@
   <arg name="enable_robot_odometry_init_guess" default="false" /> <!-- not used -->
 
   <!-- transformation between lidar and base_link -->
-  <!-- <node pkg="tf" type="static_transform_publisher" name="lidar2base_publisher" args="0 0 0 0 0 0 base_link velodyne 10" /> -->
+  <node pkg="tf" type="static_transform_publisher" name="radar_to_base" args="0 0 0 0 0 0 base_link imaging_radar1 100" />
   
   <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)" args="manager" output="screen"/>
 
   <!-- radar_preprocessing_nodelet -->
   <node pkg="nodelet" type="nodelet" name="radar_preprocessing_nodelet" args="load radar_graph_slam/PreprocessingNodelet $(arg nodelet_manager)">
     <!-- distance filter -->
+    <remap from="radar_points" to="/imaging_radar1"/>
+    <remap from="radar_twist" to="/imaging_radar1_twist"/>
     <param name="use_distance_filter" value="true" />
     <param name="distance_near_thresh" value="2" />
     <param name="distance_far_thresh" value="100.0" />
@@ -94,7 +96,7 @@
     <param name="reg_correspondence_randomness" value="20"/>
     <param name="reg_resolution" value="$(arg reg_resolution)" />
     <param name="reg_nn_search_method" value="DIRECT7" />
-    <param name="use_ego_vel" value="$(arg enable_frontend_ego_vel)"/>
+    <param name="use_ego_vel" value="false"/>
     <param name="max_submap_frames" value="5"/>
     <param name="enable_scan_to_map" value="false"/>
     <!-- IMU --> <!-- bad effect, not used -->
@@ -196,7 +198,7 @@
   <node pkg="rviz" type="rviz" name="rviz_slam" args="-d $(find radar_graph_slam)/rviz/radar_graph_slam.rviz" respawn="true"/>
 
   <!--- Rosbag Play -->
-  <include file="$(find radar_graph_slam)/launch/rosbag_play_radar_carpark1.launch" />
+  <!-- <include file="$(find radar_graph_slam)/launch/rosbag_play_radar_carpark1.launch" /> -->
   <!-- <include file="$(find radar_graph_slam)/launch/rosbag_play_radar_carpark3.launch" /> -->
   <!-- <include file="$(find radar_graph_slam)/launch/rosbag_play_radar_garden.launch" /> -->
   <!-- <include file="$(find radar_graph_slam)/launch/rosbag_play_radar_nanyanglink.launch" /> -->
