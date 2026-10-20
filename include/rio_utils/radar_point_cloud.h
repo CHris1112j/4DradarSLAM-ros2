@@ -21,7 +21,7 @@
 #include <pcl/PCLPointCloud2.h>
 #include <pcl/pcl_macros.h>
 
-#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
@@ -30,7 +30,7 @@
 namespace rio
 {
 
-// bool pcl2msgToPcl(const sensor_msgs::PointCloud2& pcl_msg, pcl::PointCloud<RadarPointCloudType>& scan);
+// bool pcl2msgToPcl(const sensor_msgs::msg::PointCloud2& pcl_msg, pcl::PointCloud<RadarPointCloudType>& scan);
 
 }  // namespace rio
 

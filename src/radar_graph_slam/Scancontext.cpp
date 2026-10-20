@@ -330,7 +330,7 @@ std::pair<int, float> SCManager::detectLoopClosureID ( const std::vector<KeyFram
     for ( int iter_idx = 0; iter_idx < NUM_CANDIDATES_FROM_TREE; iter_idx++ )
     {
         if (knn_candidate_indexes[iter_idx] > candidate_keyframe_indices.size()-1){  // To avoid out-of-range knn indice
-            ROS_INFO("To skip out-of-range knn indice: %ld",knn_candidate_indexes[iter_idx]);
+            RCLCPP_WARN(rclcpp::get_logger("SCManager"), "To skip out-of-range knn indice: %ld", knn_candidate_indexes[iter_idx]);
             continue;
         }
         MatrixXd polarcontext_candidate = polarcontexts_[candidate_keyframe_indices[knn_candidate_indexes[iter_idx]]];

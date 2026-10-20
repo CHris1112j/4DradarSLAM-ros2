@@ -1,5 +1,5 @@
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 
 #include <Eigen/Dense>
 
@@ -19,7 +19,7 @@ class CubicInterpolation {
         q_via = q_via_;
         t_via = t_via_;
         if(q_via.rows() != t_via.rows())
-            ROS_ERROR("%s","The q_via and t_via must have a same length");
+            RCLCPP_ERROR(rclcpp::get_logger("interpolation"), "The q_via and t_via must have a same length");
     }
     virtual ~CubicInterpolation() {}
     private:
@@ -44,7 +44,7 @@ class CubicInterpolation {
             the time of the second data point
         */
         if(abs(t0 - t1) < 1e-6)
-            ROS_ERROR("%s","t0 and t1 must be different");
+            RCLCPP_ERROR(rclcpp::get_logger("interpolation"), "t0 and t1 must be different");
 
         double T = t1 - t0;
         double h = q1 - q0;
@@ -64,7 +64,7 @@ class CubicInterpolation {
             output of the interpolation at time t
         */
         if(t < t_via(0) || t > t_via(t_via.size()-1))
-            ROS_ERROR("%s","The specific time error, time ranges error");
+            RCLCPP_ERROR(rclcpp::get_logger("interpolation"), "The specific time error, time ranges error");
 
         // j_array = np.where(self.t_via >= t); // find the index of t1
         int j;// = j_array[0][0];

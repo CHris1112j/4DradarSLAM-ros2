@@ -29,7 +29,7 @@
 #include <pcl/PCLPointCloud2.h>
 #include <pcl/pcl_macros.h>
 
-#include <pcl_ros/transforms.h>
+#include <pcl_ros/transforms.hpp>
 
 #include <rio_utils/radar_point_cloud.h>
 
@@ -49,19 +49,19 @@ static RadarPointCloudType toRadarPointCloudType(const Vector11& item, const Rad
   return point;
 }
 
-bool RadarEgoVelocityEstimator::estimate(const sensor_msgs::PointCloud2& radar_scan_msg,
+bool RadarEgoVelocityEstimator::estimate(const sensor_msgs::msg::PointCloud2& radar_scan_msg,
                                          Vector3& v_r,
                                          Vector3& sigma_v_r)
 {
-  sensor_msgs::PointCloud2 inlier_radar_msg, outlier_radar_msg;
+  sensor_msgs::msg::PointCloud2 inlier_radar_msg, outlier_radar_msg;
   return estimate(radar_scan_msg, v_r, sigma_v_r, inlier_radar_msg, outlier_radar_msg);
 }
 
-bool RadarEgoVelocityEstimator::estimate(const sensor_msgs::PointCloud2& radar_scan_msg,
+bool RadarEgoVelocityEstimator::estimate(const sensor_msgs::msg::PointCloud2& radar_scan_msg,
                                          Vector3& v_r,
                                          Vector3& sigma_v_r,
-                                         sensor_msgs::PointCloud2& inlier_radar_msg,
-                                         sensor_msgs::PointCloud2& outlier_radar_msg)
+                                         sensor_msgs::msg::PointCloud2& inlier_radar_msg,
+                                         sensor_msgs::msg::PointCloud2& outlier_radar_msg)
 {
   auto radar_scan(new pcl::PointCloud<RadarPointCloudType>);
   auto radar_scan_inlier(new pcl::PointCloud<RadarPointCloudType>); // static objects
@@ -142,7 +142,7 @@ bool RadarEgoVelocityEstimator::estimate(const sensor_msgs::PointCloud2& radar_s
         }
       }
     }
-    else ROS_INFO("To small valid_targets (< 2) in radar_scan (%ld)", radar_scan->size());
+    else RCLCPP_INFO(rclcpp::get_logger("radar_ego_vel_est"),"Too small valid_targets (< 2) in radar_scan (%ld)", radar_scan->size());
 
     radar_scan_inlier->height = 1;
     radar_scan_inlier->width  = radar_scan_inlier->size();
@@ -197,7 +197,7 @@ bool RadarEgoVelocityEstimator::solve3DFullRansac(const Matrix& radar_data,
 
       for (uint i = 0; i < config_.N_ransac_points; ++i) radar_data_iter.row(i) = radar_data.row(idx.at(i));
       bool rtn = solve3DFull(radar_data_iter, v_r, sigma_v_r, false);
-      if (rtn == false) ROS_INFO("Failure at solve3DFullRansac() 1");
+      if (rtn == false) RCLCPP_INFO(rclcpp::get_logger("radar_ego_vel_est"),"Failure at solve3DFullRansac() 1");
       if (rtn)
       {
         const Vector err = (y_all - H_all * v_r).array().abs();
@@ -234,7 +234,7 @@ bool RadarEgoVelocityEstimator::solve3DFullRansac(const Matrix& radar_data,
       }
     }
   }
-  else{ROS_INFO("Warning: radar_data.rows() < config_.N_ransac_points");}
+  else{RCLCPP_INFO(rclcpp::get_logger("radar_ego_vel_est"),"Warning: radar_data.rows() < config_.N_ransac_points");}
 
   if (!inlier_idx_best.empty())
   {
@@ -242,10 +242,10 @@ bool RadarEgoVelocityEstimator::solve3DFullRansac(const Matrix& radar_data,
     for (uint i = 0; i < inlier_idx_best.size(); ++i) radar_data_inlier.row(i) = radar_data.row(inlier_idx_best.at(i));
     
     bool rtn = solve3DFull(radar_data_inlier, v_r, sigma_v_r, true);
-    if (rtn == false) ROS_INFO("Failure at solve3DFullRansac() 2");
+    if (rtn == false) RCLCPP_INFO(rclcpp::get_logger("radar_ego_vel_est"),"Failure at solve3DFullRansac() 2");
     return rtn;
   }
-  ROS_INFO("Failure at solve3DFullRansac() 3");
+  RCLCPP_INFO(rclcpp::get_logger("radar_ego_vel_est"),"Failure at solve3DFullRansac() 3");
   return false;
 }
 
@@ -297,7 +297,8 @@ bool RadarEgoVelocityEstimator::solve3DFull(const Matrix& radar_data,
       return true;
     }
   }
-  //ROS_INFO("cond too large, cond = %f", cond);
+
+  // RCLCPP_WARN(rclcpp::get_logger("radar_ego_velocity_estimator"), "cond too large, cond = %f", cond);
 
   return true;//return false;
 }

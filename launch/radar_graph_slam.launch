@@ -33,14 +33,17 @@
   <arg name="enable_robot_odometry_init_guess" default="false" /> <!-- not used -->
 
   <!-- transformation between lidar and base_link -->
-  <node pkg="tf" type="static_transform_publisher" name="radar_to_base" args="0 0 0 0 0 0 base_link imaging_radar1 100" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="radar_to_base" args="0 0 0 0 0 0 base_link imaging_radar1 100" />
   
   <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager)" args="manager" output="screen"/>
 
+  <node pkg="radar_graph_slam" exec="preprocessing_node" name="preprocessing_node" output="screen">
+    <param name="pointCloudTopic" value="/imaging_radar1/pointcloud2" />
+  </node>
   <!-- radar_preprocessing_nodelet -->
   <node pkg="nodelet" type="nodelet" name="radar_preprocessing_nodelet" args="load radar_graph_slam/PreprocessingNodelet $(arg nodelet_manager)">
     <!-- distance filter -->
-    <remap from="radar_points" to="/imaging_radar1"/>
+    <remap from="radar_points" to="/imaging_radar1/pointcloud2"/>
     <remap from="radar_twist" to="/imaging_radar1_twist"/>
     <param name="use_distance_filter" value="true" />
     <param name="distance_near_thresh" value="2" />
@@ -190,7 +193,7 @@
     <!-- update params -->
     <param name="graph_update_interval" value="2.0" />
     <param name="map_cloud_update_interval" value="6.0" />
-    <param name="map_cloud_resolution" value="0.05" />
+    <param name="map_cloud_resolution" value=0.05 />
     <!-- marker params -->
     <param name="show_sphere" value="false" />
   </node>

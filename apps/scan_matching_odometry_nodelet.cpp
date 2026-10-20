@@ -14,31 +14,35 @@
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 
-#include <ros/ros.h>
-#include <ros/time.h>
-#include <ros/duration.h>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/time.hpp>
+#include <rclcpp/duration.hpp>
 
-#include <tf_conversions/tf_eigen.h>
-#include <tf/transform_listener.h>
-#include <tf/transform_broadcaster.h>
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 
-#include <std_msgs/String.h>
-#include <std_msgs/Time.h>
-#include <nav_msgs/Odometry.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <sensor_msgs/Imu.h>
-#include <geometry_msgs/TransformStamped.h>
-#include <geometry_msgs/PoseWithCovarianceStamped.h>
-#include <geometry_msgs/TwistWithCovarianceStamped.h>
+#include <std_msgs/msg/string.hpp>
+#include <builtin_interfaces/msg/time.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 
-#include <nodelet/nodelet.h>
-#include <pluginlib/class_list_macros.h>
+#include <rclcpp/rclcpp.hpp>
+#include <pluginlib/class_list_macros.hpp>
 
-#include <pcl_ros/point_cloud.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/filters/approximate_voxel_grid.h>
@@ -48,11 +52,12 @@
 
 #include <radar_graph_slam/ros_utils.hpp>
 #include <radar_graph_slam/registrations.hpp>
-#include <radar_graph_slam/ScanMatchingStatus.h>
+#include <radar_graph_slam/msg/scan_matching_status.hpp>
 #include <radar_graph_slam/keyframe.hpp>
 #include <radar_graph_slam/keyframe_updater.hpp>
 #include <radar_graph_slam/graph_slam.hpp>
 #include <radar_graph_slam/information_matrix_calculator.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 
 #include "utility_radar.h"
 
@@ -60,45 +65,57 @@ using namespace std;
 
 namespace radar_graph_slam {
 
-class ScanMatchingOdometryNodelet : public nodelet::Nodelet, public ParamServer {
+class ScanMatchingOdometryNodelet : public rclcpp::Node, public ParamServer {
 public:
   typedef pcl::PointXYZI PointT;
-  typedef message_filters::sync_policies::ApproximateTime<geometry_msgs::TwistWithCovarianceStamped, sensor_msgs::PointCloud2> ApproxSyncPolicy;
-  // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, geometry_msgs::TransformStamped> ApproxSyncPolicy2;
+  typedef message_filters::sync_policies::ApproximateTime<geometry_msgs::msg::TwistWithCovarianceStamped, sensor_msgs::msg::PointCloud2> ApproxSyncPolicy;
+  // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::PointCloud2, geometry_msgs::TransformStamped> ApproxSyncPolicy2;
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  ScanMatchingOdometryNodelet() {}
+  ScanMatchingOdometryNodelet()
+    : ScanMatchingOdometryNodelet(rclcpp::NodeOptions()) {}
+
+  explicit ScanMatchingOdometryNodelet(const rclcpp::NodeOptions & options)
+    : rclcpp::Node("scan_matching_odometry_nodelet", options)
+  {
+    ParamServer::operator=(ParamServer(this));
+    init_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(100),
+      [this]() {
+        this->init_timer_->cancel();
+        this->onInit();
+      }
+    );
+  }
   virtual ~ScanMatchingOdometryNodelet() {}
 
   virtual void onInit() {
-    NODELET_DEBUG("initializing scan_matching_odometry_nodelet...");
-    nh = getNodeHandle();
-    mt_nh = getMTNodeHandle();
-    private_nh = getPrivateNodeHandle();
+    RCLCPP_DEBUG(this->get_logger(), "initializing scan_matching_odometry_nodelet...");
+
+    map2odom_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(this->shared_from_this());
 
     initialize_params(); // this
 
-    if(private_nh.param<bool>("enable_imu_frontend", false)) {
-      msf_pose_sub = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("/msf_core/pose", 1, boost::bind(&ScanMatchingOdometryNodelet::msf_pose_callback, this, _1, false));
-      msf_pose_after_update_sub = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("/msf_core/pose_after_update", 1, boost::bind(&ScanMatchingOdometryNodelet::msf_pose_callback, this, _1, true));
+    if(this->get_parameter_or<bool>("enable_imu_frontend", false)) {
+      msf_pose_sub = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("/msf_core/pose", 1, [this](const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg){ msf_pose_callback(msg, false); });
+      msf_pose_after_update_sub = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("/msf_core/pose_after_update", 1, [this](const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg){ msf_pose_callback(msg, true); });
     }
     //******** Subscribers **********
-    ego_vel_sub.reset(new message_filters::Subscriber<geometry_msgs::TwistWithCovarianceStamped>(mt_nh, "/eagle_data/twist", 256));
-    points_sub.reset(new message_filters::Subscriber<sensor_msgs::PointCloud2>(mt_nh, "/filtered_points", 32));
-    sync.reset(new message_filters::Synchronizer<ApproxSyncPolicy>(ApproxSyncPolicy(32), *ego_vel_sub, *points_sub));
-    sync->registerCallback(boost::bind(&ScanMatchingOdometryNodelet::pointcloud_callback, this, _1, _2));
-    imu_sub = nh.subscribe("/imu", 1024, &ScanMatchingOdometryNodelet::imu_callback, this);
-    command_sub = nh.subscribe("/command", 10, &ScanMatchingOdometryNodelet::command_callback, this);
+    ego_vel_sub = std::make_shared<message_filters::Subscriber<geometry_msgs::msg::TwistWithCovarianceStamped>>(this, "/eagle_data/twist");
+    points_sub = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>(this, "/filtered_points");
+    sync = std::make_unique<message_filters::Synchronizer<ApproxSyncPolicy>>(ApproxSyncPolicy(200), *ego_vel_sub, *points_sub);
+    sync->setMaxIntervalDuration(rclcpp::Duration(1, 0));
+    sync->registerCallback(std::bind(&ScanMatchingOdometryNodelet::pointcloud_callback, this, std::placeholders::_1, std::placeholders::_2));
+    imu_sub = this->create_subscription<sensor_msgs::msg::Imu>("/imu", 1024, std::bind(&ScanMatchingOdometryNodelet::imu_callback, this, std::placeholders::_1));
+    command_sub = this->create_subscription<std_msgs::msg::String>("/command", 10, std::bind(&ScanMatchingOdometryNodelet::command_callback, this, std::placeholders::_1));
 
     //******** Publishers **********
-    read_until_pub = nh.advertise<std_msgs::Header>("/scan_matching_odometry/read_until", 32);
-    // Odometry of Radar scan-matching_
-    odom_pub = nh.advertise<nav_msgs::Odometry>(odomTopic, 32);
-    // Transformation of Radar scan-matching_
-    trans_pub = nh.advertise<geometry_msgs::TransformStamped>("/scan_matching_odometry/transform", 32);
-    status_pub = private_nh.advertise<ScanMatchingStatus>("/scan_matching_odometry/status", 8);
-    aligned_points_pub = nh.advertise<sensor_msgs::PointCloud2>("/aligned_points", 32);
-    submap_pub = nh.advertise<sensor_msgs::PointCloud2>("/radar_graph_slam/submap", 2);
+    read_until_pub = this->create_publisher<std_msgs::msg::Header>("/scan_matching_odometry/read_until", 32);
+    odom_pub = this->create_publisher<nav_msgs::msg::Odometry>(odomTopic, 32);
+    trans_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("/scan_matching_odometry/transform", 32);
+    status_pub = this->create_publisher<radar_graph_slam::msg::ScanMatchingStatus>("/scan_matching_odometry/status", 8);
+    aligned_points_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/aligned_points", 32);
+    submap_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("/radar_graph_slam/submap", 2);
   }
 
 private:
@@ -106,41 +123,41 @@ private:
    * @brief initialize parameters
    */
   void initialize_params() {
-    auto& pnh = private_nh;
-    points_topic = pnh.param<std::string>("points_topic", "/radar_enhanced_pcl");
-    use_ego_vel = pnh.param<bool>("use_ego_vel", false);
+    // pnh removed (ROS2)
+    points_topic = this->get_parameter_or<std::string>("points_topic", "/radar_enhanced_pcl");
+    use_ego_vel = this->get_parameter_or<bool>("use_ego_vel", false);
 
     // The minimum tranlational distance and rotation angle between keyframes_.
     // If this value is zero, frames are always compared with the previous frame
-    keyframe_delta_trans = pnh.param<double>("keyframe_delta_trans", 0.25);
-    keyframe_delta_angle = pnh.param<double>("keyframe_delta_angle", 0.15);
-    keyframe_delta_time = pnh.param<double>("keyframe_delta_time", 1.0);
+    keyframe_delta_trans = this->get_parameter_or<double>("keyframe_delta_trans", 0.2);
+    keyframe_delta_angle = this->get_parameter_or<double>("keyframe_delta_angle", 0.15);
+    keyframe_delta_time = this->get_parameter_or<double>("keyframe_delta_time", 1.0);
 
     // Registration validation by thresholding
-    enable_transform_thresholding = pnh.param<bool>("enable_transform_thresholding", false);
-    enable_imu_thresholding = pnh.param<bool>("enable_imu_thresholding", false);
-    max_acceptable_trans = pnh.param<double>("max_acceptable_trans", 1.0);
-    max_acceptable_angle = pnh.param<double>("max_acceptable_angle", 1.0);
-    max_diff_trans = pnh.param<double>("max_diff_trans", 1.0);
-    max_diff_angle = pnh.param<double>("max_diff_angle", 1.0);
-    max_egovel_cum = pnh.param<double>("max_egovel_cum", 1.0);
+    enable_transform_thresholding = this->get_parameter_or<bool>("enable_transform_thresholding", false);
+    enable_imu_thresholding = this->get_parameter_or<bool>("enable_imu_thresholding", false);
+    max_acceptable_trans = this->get_parameter_or<double>("max_acceptable_trans", 1.0);
+    max_acceptable_angle = this->get_parameter_or<double>("max_acceptable_angle", 1.0);
+    max_diff_trans = this->get_parameter_or<double>("max_diff_trans", 1.0);
+    max_diff_angle = this->get_parameter_or<double>("max_diff_angle", 1.0);
+    max_egovel_cum = this->get_parameter_or<double>("max_egovel_cum", 1.0);
 
-    map_cloud_resolution = pnh.param<double>("map_cloud_resolution", 0.05);
-    keyframe_updater.reset(new KeyframeUpdater(pnh));
+    map_cloud_resolution = this->get_parameter_or<double>("map_cloud_resolution", 0.05);
+    keyframe_updater.reset(new KeyframeUpdater(shared_from_this()));
 
-    enable_scan_to_map = pnh.param<bool>("enable_scan_to_map", false);
-    max_submap_frames = pnh.param<int>("max_submap_frames", 5);
+    enable_scan_to_map = this->get_parameter_or<bool>("enable_scan_to_map", false);
+    max_submap_frames = this->get_parameter_or<int>("max_submap_frames", 5);
 
-    enable_imu_fusion = private_nh.param<bool>("enable_imu_fusion", false);
-    imu_debug_out = private_nh.param<bool>("imu_debug_out", false);
+    enable_imu_fusion = this->get_parameter_or<bool>("enable_imu_fusion", false);
+    imu_debug_out = this->get_parameter_or<bool>("imu_debug_out", false);
     cout << "enable_imu_fusion = " << enable_imu_fusion << endl;
-    imu_fusion_ratio = private_nh.param<double>("imu_fusion_ratio", 0.1);
+    imu_fusion_ratio = this->get_parameter_or<double>("imu_fusion_ratio", 0.1);
 
-    // graph_slam.reset(new GraphSLAM(pnh.param<std::string>("g2o_solver_type", "lm_var")));
+    // graph_slam.reset(new GraphSLAM(this->get_parameter_or<std::string>("g2o_solver_type", "lm_var")));
 
     // select a downsample method (VOXELGRID, APPROX_VOXELGRID, NONE)
-    std::string downsample_method = pnh.param<std::string>("downsample_method", "VOXELGRID");
-    double downsample_resolution = pnh.param<double>("downsample_resolution", 0.1);
+    std::string downsample_method = this->get_parameter_or<std::string>("downsample_method", "VOXELGRID");
+    double downsample_resolution = this->get_parameter_or<double>("downsample_resolution", 0.05);
     if(downsample_method == "VOXELGRID") {
       std::cout << "downsample: VOXELGRID " << downsample_resolution << std::endl;
       auto voxelgrid = new pcl::VoxelGrid<PointT>();
@@ -160,33 +177,34 @@ private:
       pcl::PassThrough<PointT>::Ptr passthrough(new pcl::PassThrough<PointT>());
       downsample_filter = passthrough;
     }
-    registration_s2s = select_registration_method(pnh);
-    registration_s2m = select_registration_method(pnh);
+    registration_s2s = select_registration_method(shared_from_this());
+    registration_s2m = select_registration_method(shared_from_this());
   }
 
-  void imu_callback(const sensor_msgs::ImuConstPtr& imu_msg) {
+  void imu_callback(const sensor_msgs::msg::Imu::ConstSharedPtr& imu_msg) {
     
     Eigen::Quaterniond imu_quat_from(imu_msg->orientation.w, imu_msg->orientation.x, imu_msg->orientation.y, imu_msg->orientation.z);
     Eigen::Quaterniond imu_quat_deskew = imu_quat_from * extQRPY;
     imu_quat_deskew.normalize();
 
     double roll, pitch, yaw;
-    // tf::quaternionMsgToTF(imu_odom_msg->orientation, orientation);
-    tf::Quaternion orientation = tf::Quaternion(imu_quat_deskew.x(),imu_quat_deskew.y(),imu_quat_deskew.z(),imu_quat_deskew.w());
-    tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
+    tf2::Quaternion orientation(imu_quat_deskew.x(), imu_quat_deskew.y(), imu_quat_deskew.z(), imu_quat_deskew.w());
+    tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
     imuPointerLast = (imuPointerLast + 1) % imuQueLength;
-    imuTime[imuPointerLast] = imu_msg->header.stamp.toSec();
+    rclcpp::Time imu_stamp(imu_msg->header.stamp);
+    imuTime[imuPointerLast] = imu_stamp.seconds();
     imuRoll[imuPointerLast] = roll;
     imuPitch[imuPointerLast] = pitch;
     // cout << "get imu rp: " << roll << " " << pitch << endl;
 
-    sensor_msgs::ImuPtr imu(new sensor_msgs::Imu);
+    auto imu = std::make_shared<sensor_msgs::msg::Imu>();
     imu->header = imu_msg->header;
-    imu->angular_velocity = imu_msg->angular_velocity; imu->linear_acceleration = imu_msg->linear_acceleration;
+    imu->angular_velocity = imu_msg->angular_velocity;
+    imu->linear_acceleration = imu_msg->linear_acceleration;
     imu->angular_velocity_covariance = imu_msg->angular_velocity_covariance;
-    imu->linear_acceleration_covariance, imu_msg->linear_acceleration_covariance;
+    imu->linear_acceleration_covariance = imu_msg->linear_acceleration_covariance;
     imu->orientation_covariance = imu_msg->orientation_covariance;
-    imu->orientation.w=imu_quat_deskew.w(); imu->orientation.x = imu_quat_deskew.x(); imu->orientation.y = imu_quat_deskew.y(); imu->orientation.z = imu_quat_deskew.z();
+    imu->orientation.w = imu_quat_deskew.w(); imu->orientation.x = imu_quat_deskew.x(); imu->orientation.y = imu_quat_deskew.y(); imu->orientation.z = imu_quat_deskew.z();
     {
       std::lock_guard<std::mutex> lock(imu_queue_mutex);
       imu_queue.push_back(imu);
@@ -194,9 +212,10 @@ private:
 
     static int cnt = 0;
     if(cnt == 0) {
-      geometry_msgs::Quaternion imuQuat = tf::createQuaternionMsgFromRollPitchYaw(roll, pitch, 0);
-      global_orient_matrix = Eigen::Quaterniond(imuQuat.w, imuQuat.x, imuQuat.y, imuQuat.z).toRotationMatrix();
-      ROS_INFO_STREAM("Initial IMU euler angles (RPY): "
+      tf2::Quaternion imuQuat;
+      imuQuat.setRPY(roll, pitch, 0);
+      global_orient_matrix = Eigen::Quaterniond(imuQuat.w(), imuQuat.x(), imuQuat.y(), imuQuat.z()).toRotationMatrix();
+      RCLCPP_INFO_STREAM(this->get_logger(), "Initial IMU euler angles (RPY): "
             << RAD2DEG(roll) << ", " << RAD2DEG(pitch) << ", " << RAD2DEG(yaw));
       cnt = 1;
     }
@@ -222,8 +241,10 @@ private:
       // find the imu data which is closest to the keyframe_
       auto closest_imu = imu_cursor;
       for(auto imu = imu_cursor; imu != imu_queue.end(); imu++) {
-        auto dt = ((*closest_imu)->header.stamp - keyframe->stamp).toSec();
-        auto dt2 = ((*imu)->header.stamp - keyframe->stamp).toSec();
+        rclcpp::Time closest_stamp((*closest_imu)->header.stamp);
+        rclcpp::Time imu_stamp((*imu)->header.stamp);
+        auto dt = (closest_stamp - keyframe->stamp).seconds();
+        auto dt2 = (imu_stamp - keyframe->stamp).seconds();
         if(std::abs(dt) < std::abs(dt2)) {
           break;
         }
@@ -231,10 +252,11 @@ private:
       }
       // if the time residual between the imu and keyframe_ is too large, skip it
       imu_cursor = closest_imu;
-      if(0.2 < std::abs(((*closest_imu)->header.stamp - keyframe->stamp).toSec())) {
+      rclcpp::Time closest_stamp((*closest_imu)->header.stamp);
+      if(0.2 < std::abs((closest_stamp - keyframe->stamp).seconds())) {
         continue;
       }
-      sensor_msgs::Imu imu_;
+      sensor_msgs::msg::Imu imu_;
       imu_.header = (*closest_imu)->header; imu_.orientation = (*closest_imu)->orientation;
       imu_.angular_velocity = (*closest_imu)->angular_velocity; imu_.linear_acceleration = (*closest_imu)->linear_acceleration;
       imu_.angular_velocity_covariance = (*closest_imu)->angular_velocity_covariance;
@@ -243,14 +265,14 @@ private:
       keyframe->imu = imu_;
       updated = true;
     }
-    auto remove_loc = std::upper_bound(imu_queue.begin(), imu_queue.end(), keyframes.back()->stamp, [=](const ros::Time& stamp, const sensor_msgs::ImuConstPtr& imupoint) { return stamp < imupoint->header.stamp; });
+    auto remove_loc = std::upper_bound(imu_queue.begin(), imu_queue.end(), keyframes.back()->stamp, [=](const rclcpp::Time& stamp, const sensor_msgs::msg::Imu::ConstSharedPtr& imupoint) { return stamp < imupoint->header.stamp; });
     imu_queue.erase(imu_queue.begin(), remove_loc);
     return updated;
   }
 
-  std::pair<bool, sensor_msgs::Imu> get_closest_imu(ros::Time frame_stamp) {
-    sensor_msgs::Imu imu_;
-    std::pair<bool, sensor_msgs::Imu> false_result {false, imu_};
+  std::pair<bool, sensor_msgs::msg::Imu> get_closest_imu(rclcpp::Time frame_stamp) {
+    sensor_msgs::msg::Imu imu_;
+    std::pair<bool, sensor_msgs::msg::Imu> false_result {false, imu_};
     if(keyframes.empty() || imu_queue.empty())
       return false_result;
     bool updated = false;
@@ -259,8 +281,10 @@ private:
     // find the imu data which is closest to the keyframe_
     auto closest_imu = imu_cursor;
     for(auto imu = imu_cursor; imu != imu_queue.end(); imu++) {
-      auto dt = ((*closest_imu)->header.stamp - frame_stamp).toSec();
-      auto dt2 = ((*imu)->header.stamp - frame_stamp).toSec();
+      rclcpp::Time closest_stamp((*closest_imu)->header.stamp);
+      rclcpp::Time imu_stamp((*imu)->header.stamp);
+      auto dt = (closest_stamp - frame_stamp).seconds();
+      auto dt2 = (imu_stamp - frame_stamp).seconds();
       if(std::abs(dt) < std::abs(dt2)) {
         break;
       }
@@ -268,18 +292,19 @@ private:
     }
     // if the time residual between the imu and keyframe_ is too large, skip it
     imu_cursor = closest_imu;
-    if(0.2 < std::abs(((*closest_imu)->header.stamp - frame_stamp).toSec()))
+    rclcpp::Time closest_stamp((*closest_imu)->header.stamp);
+    if(0.2 < std::abs((closest_stamp - frame_stamp).seconds()))
       return false_result;
 
     imu_.header = (*closest_imu)->header; imu_.orientation = (*closest_imu)->orientation;
     imu_.angular_velocity = (*closest_imu)->angular_velocity; imu_.linear_acceleration = (*closest_imu)->linear_acceleration;
-    imu_.angular_velocity_covariance = (*closest_imu)->angular_velocity_covariance; 
+    imu_.angular_velocity_covariance = (*closest_imu)->angular_velocity_covariance;
     imu_.linear_acceleration_covariance = (*closest_imu)->linear_acceleration_covariance;
     imu_.orientation_covariance = (*closest_imu)->orientation_covariance;
 
     updated = true;
     // cout << (*closest_imu)->orientation <<endl;
-    std::pair<bool, sensor_msgs::Imu> result {updated, imu_};
+    std::pair<bool, sensor_msgs::msg::Imu> result {updated, imu_};
     return result;
   }
 
@@ -317,8 +342,9 @@ private:
       Eigen::Matrix3d matr = odom_to_update.block<3, 3>(0, 0);
       // Eigen::Vector3d xyz = odom_to_update.block<3, 1>(0, 3);
       Eigen::Vector3d ypr_odom = R2ypr(matr.block<3,3>(0,0));
-      geometry_msgs::Quaternion imuQuat = tf::createQuaternionMsgFromRollPitchYaw(imuRollLast, imuPitchLast, ypr_odom(0));
-      Eigen::Matrix3d imu_rot = Eigen::Matrix3d(Eigen::Quaterniond(imuQuat.w, imuQuat.x, imuQuat.y, imuQuat.z));
+      tf2::Quaternion imuQuat;
+      imuQuat.setRPY(imuRollLast, imuPitchLast, ypr_odom(0));
+      Eigen::Matrix3d imu_rot = Eigen::Matrix3d(Eigen::Quaterniond(imuQuat.w(), imuQuat.x(), imuQuat.y(), imuQuat.z()));
       Eigen::Vector3d ypr_imu = R2ypr(imu_rot);
       // IMU orientation transformed from world coordinate to map coordinate
       Eigen::Matrix3d imu_rot_transed = global_orient_matrix.inverse() * imu_rot;
@@ -326,8 +352,9 @@ private:
       double& yaw_ = ypr_odom(0);
       double pitch_fused = (1 - imu_fusion_ratio) * ypr_odom(1) + imu_fusion_ratio * ypr_imu_trans(1);
       double roll_fused = (1 - imu_fusion_ratio) * ypr_odom(2) + imu_fusion_ratio * ypr_imu_trans(2);
-      geometry_msgs::Quaternion rosQuat = tf::createQuaternionMsgFromRollPitchYaw(roll_fused, pitch_fused, yaw_);
-      Eigen::Quaterniond quat_updated = Eigen::Quaterniond(rosQuat.w, rosQuat.x, rosQuat.y, rosQuat.z);
+      tf2::Quaternion fusedQuat;
+      fusedQuat.setRPY(roll_fused, pitch_fused, yaw_);
+      Eigen::Quaterniond quat_updated(fusedQuat.w(), fusedQuat.x(), fusedQuat.y(), fusedQuat.z());
       odom_to_update.block<3, 3>(0, 0) = quat_updated.toRotationMatrix();
 
       if (imu_debug_out)
@@ -344,12 +371,13 @@ private:
    * @brief callback for point clouds
    * @param cloud_msg  point cloud msg
    */
-  void pointcloud_callback(const geometry_msgs::TwistWithCovarianceStampedConstPtr& twistMsg, const sensor_msgs::PointCloud2ConstPtr& cloud_msg) {
-    if(!ros::ok()) {
+  void pointcloud_callback(const geometry_msgs::msg::TwistWithCovarianceStamped::ConstSharedPtr& twistMsg, const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud_msg) {
+    if(!rclcpp::ok()) {
       return;
     }
-    timeLaserOdometry = cloud_msg->header.stamp.toSec();
-    double this_cloud_time = cloud_msg->header.stamp.toSec();
+    rclcpp::Time cloud_time(cloud_msg->header.stamp);
+    timeLaserOdometry = cloud_time.seconds();
+    double this_cloud_time = cloud_time.seconds();
     static double last_cloud_time = this_cloud_time;
 
     double dt = this_cloud_time - last_cloud_time;
@@ -357,32 +385,34 @@ private:
     double egovel_cum_y = twistMsg->twist.twist.linear.y * dt;
     double egovel_cum_z = twistMsg->twist.twist.linear.z * dt;
     // If too large, set 0
-    if (pow(egovel_cum_x,2)+pow(egovel_cum_y,2)+pow(egovel_cum_z,2) > pow(max_egovel_cum, 2));
-    else egovel_cum.block<3, 1>(0, 3) = Eigen::Vector3d(egovel_cum_x, egovel_cum_y, egovel_cum_z);
-    
+    if (pow(egovel_cum_x,2)+pow(egovel_cum_y,2)+pow(egovel_cum_z,2) > pow(max_egovel_cum, 2)) {
+      // do nothing
+    } else {
+      egovel_cum.block<3, 1>(0, 3) = Eigen::Vector3d(egovel_cum_x, egovel_cum_y, egovel_cum_z);
+    }
+
     last_cloud_time = this_cloud_time;
 
     pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>());
     pcl::fromROSMsg(*cloud_msg, *cloud);
 
     // Matching
-    Eigen::Matrix4d pose = matching(cloud_msg->header.stamp, cloud);
-    geometry_msgs::TwistWithCovariance twist = twistMsg->twist;
+    Eigen::Matrix4d pose = matching(cloud_time, cloud);
+    geometry_msgs::msg::TwistWithCovariance twist = twistMsg->twist;
     // publish map to odom frame
-    publish_odometry(cloud_msg->header.stamp, mapFrame, odometryFrame, pose, twist);
+    publish_odometry(cloud_time, mapFrame, odometryFrame, pose, twist);
 
     // In offline estimation, point clouds will be supplied until the published time
-    std_msgs::HeaderPtr read_until(new std_msgs::Header());
-    read_until->frame_id = points_topic;
-    read_until->stamp = cloud_msg->header.stamp + ros::Duration(1, 0);
-    read_until_pub.publish(read_until);
-
-    read_until->frame_id = "/filtered_points";
-    read_until_pub.publish(read_until);
+    std_msgs::msg::Header read_until;
+    read_until.frame_id = points_topic;
+    read_until.stamp = rclcpp::Time(cloud_time + rclcpp::Duration(1, 0));
+    read_until_pub->publish(read_until);
+    read_until.frame_id = "/filtered_points";
+    read_until_pub->publish(read_until);
   }
 
 
-  void msf_pose_callback(const geometry_msgs::PoseWithCovarianceStampedConstPtr& pose_msg, bool after_update) {
+  void msf_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr& pose_msg, bool after_update) {
     if(after_update) {
       msf_pose_after_update = pose_msg;
     } else {
@@ -413,9 +443,9 @@ private:
    * @param cloud  the input cloud
    * @return the relative pose between the input cloud and the keyframe_ cloud
    */
-  Eigen::Matrix4d matching(const ros::Time& stamp, const pcl::PointCloud<PointT>::ConstPtr& cloud) {
+  Eigen::Matrix4d matching(const rclcpp::Time& stamp, const pcl::PointCloud<PointT>::ConstPtr& cloud) {
     if(!keyframe_cloud_s2s) {
-      prev_time = ros::Time();
+      prev_time = rclcpp::Time();
       prev_trans_s2s.setIdentity();
       keyframe_pose_s2s.setIdentity();
       keyframe_stamp = stamp;
@@ -460,8 +490,8 @@ private:
 
     // If not converged, use last transformation
     if(!registration_s2s->hasConverged()) {
-      NODELET_INFO_STREAM("scan matching_ has not converged!!");
-      NODELET_INFO_STREAM("ignore this frame(" << stamp << ")");
+      RCLCPP_WARN(this->get_logger(), "scan matching has not converged!!");
+      RCLCPP_WARN_STREAM(this->get_logger(), "ignore this frame(" << stamp.seconds() << ")");
       if (enable_scan_to_map) return keyframe_pose_s2m * prev_trans_s2m;
       else return keyframe_pose_s2s * prev_trans_s2s;
     }
@@ -472,8 +502,8 @@ private:
     if (enable_scan_to_map){
       registration_s2m->align(*aligned, guess.cast<float>());
       if(!registration_s2m->hasConverged()) {
-        NODELET_INFO_STREAM("scan matching_ has not converged!!");
-        NODELET_INFO_STREAM("ignore this frame(" << stamp << ")");
+        RCLCPP_WARN(this->get_logger(), "scan matching has not converged!!");
+        RCLCPP_WARN_STREAM(this->get_logger(), "ignore this frame(" << stamp.seconds() << ")");
         return keyframe_pose_s2m * prev_trans_s2m;
       }
       trans_s2m = registration_s2m->getFinalTransformation().cast<double>();
@@ -499,7 +529,7 @@ private:
 
       if (enable_imu_thresholding) {
         // Use IMU orientation to determine whether the matching result is good or not
-        sensor_msgs::Imu frame_imu;
+        sensor_msgs::msg::Imu frame_imu;
         Eigen::Matrix3d rot_imu = Eigen::Matrix3d::Identity();
         auto result = get_closest_imu(stamp);
         if (result.first) {
@@ -526,7 +556,7 @@ private:
           mat_est.block<3, 3>(0, 0) = matrix_rot;
           mat_est.block<3, 1>(0, 3) = delta_trans_egovel;
           if (too_large_trans) cout << "Too large transform! " << dx_rd << "[m] " << da_rd << "[deg] ";
-          cout << "Difference of Odom and IMU/EgoVel too large " << dx << "[m] " << da << "[deg] (" << stamp << ")" << endl;
+          cout << "Difference of Odom and IMU/EgoVel too large " << dx << "[m] " << da << "[deg] (" << stamp.seconds() << ")" << endl;
           prev_trans_s2s = prev_trans_s2s * mat_est;
           thresholded = true;
           if (enable_scan_to_map){
@@ -539,7 +569,7 @@ private:
       else {
         if (too_large_trans) {
           cout << "Too large transform!!  " << dx_rd << "[m] " << da_rd << "[degree]"<<
-            " Ignore this frame (" << stamp << ")" << endl;
+            " Ignore this frame (" << stamp.seconds() << ")" << endl;
           prev_trans_s2s = trans_s2s;
           thresholded = true;
           if (enable_scan_to_map){
@@ -605,11 +635,15 @@ private:
       }
     }
     
-    if (aligned_points_pub.getNumSubscribers() > 0)
+    if (aligned_points_pub && aligned_points_pub->get_subscription_count() > 0)
     {
       pcl::transformPointCloud (*cloud, *aligned, odom_s2s_now);
       aligned->header.frame_id = odometryFrame;
-      aligned_points_pub.publish(*aligned);
+      // aligned_points_pub->publish(*aligned);
+      sensor_msgs::msg::PointCloud2 aligned_msg;
+      pcl::toROSMsg(*aligned, aligned_msg);
+      aligned_msg.header.stamp = stamp;
+      aligned_points_pub->publish(aligned_msg);
     }
 
     if (enable_scan_to_map)
@@ -624,16 +658,30 @@ private:
    * @param stamp  timestamp
    * @param pose   odometry pose to be published
    */
-  void publish_odometry(const ros::Time& stamp, const std::string& father_frame_id, const std::string& child_frame_id, const Eigen::Matrix4d& pose_in, const geometry_msgs::TwistWithCovariance twist_in) {
+  void publish_odometry(const rclcpp::Time& stamp, const std::string& father_frame_id, const std::string& child_frame_id, const Eigen::Matrix4d& pose_in, const geometry_msgs::msg::TwistWithCovariance twist_in) {
     // publish transform stamped for IMU integration
-    geometry_msgs::TransformStamped odom_trans = matrix2transform(stamp, pose_in, father_frame_id, child_frame_id); //"map" 
-    trans_pub.publish(odom_trans);
+    // geometry_msgs::msg::TransformStamped odom_trans = matrix2transform(stamp, pose_in, father_frame_id, child_frame_id); //"map" 
+    geometry_msgs::msg::TransformStamped odom_trans;
+    odom_trans.header.stamp = stamp;
+    odom_trans.header.frame_id = father_frame_id;
+    odom_trans.child_frame_id = child_frame_id;
+    
+    // Assuming pose_in is an Eigen::Matrix4f or Eigen::Matrix4d
+    Eigen::Isometry3d pose_iso;
+    pose_iso.matrix() = pose_in.cast<double>();
+    
+    odom_trans.transform = tf2::eigenToTransform(pose_iso).transform;
+    if (trans_pub) {
+      trans_pub->publish(odom_trans);
+    }
 
     // broadcast the transform over TF
-    map2odom_broadcaster.sendTransform(odom_trans);
+    if (map2odom_broadcaster) {
+      map2odom_broadcaster->sendTransform(odom_trans);
+    }
 
     // publish the transform
-    nav_msgs::Odometry odom;
+    nav_msgs::msg::Odometry odom;
     odom.header.stamp = stamp;
     odom.header.frame_id = father_frame_id;   // frame: /odom
     odom.child_frame_id = child_frame_id;
@@ -644,18 +692,18 @@ private:
     odom.pose.pose.orientation = odom_trans.transform.rotation;
     odom.twist = twist_in;
 
-    odom_pub.publish(odom);
+    odom_pub->publish(odom);
   }
 
   /**
    * @brief publish scan matching_ status
    */
-  void publish_scan_matching_status(const ros::Time& stamp, const std::string& frame_id, pcl::PointCloud<pcl::PointXYZI>::ConstPtr aligned, const std::string& msf_source, const Eigen::Isometry3d& msf_delta) {
-    if(!status_pub.getNumSubscribers()) {
+  void publish_scan_matching_status(const rclcpp::Time& stamp, const std::string& frame_id, pcl::PointCloud<pcl::PointXYZI>::ConstPtr aligned, const std::string& msf_source, const Eigen::Isometry3d& msf_delta) {
+    if(!status_pub || status_pub->get_subscription_count() == 0) {
       return;
     }
 
-    ScanMatchingStatus status;
+    radar_graph_slam::msg::ScanMatchingStatus status;
     status.header.frame_id = frame_id;
     status.header.stamp = stamp;
     status.has_converged = registration_s2s->hasConverged();
@@ -675,7 +723,9 @@ private:
     }
     status.inlier_fraction = static_cast<float>(num_inliers) / aligned->size();
 
-    status.relative_pose = isometry2pose(Eigen::Isometry3d(registration_s2s->getFinalTransformation().cast<double>()));
+    // status.relative_pose = isometry2pose(Eigen::Isometry3d(registration_s2s->getFinalTransformation().cast<double>()));
+    Eigen::Isometry3d current_isometry(registration_s2s->getFinalTransformation().cast<double>());
+    status.relative_pose = tf2::toMsg(current_isometry);
 
     if(!msf_source.empty()) {
       status.prediction_labels.resize(1);
@@ -686,10 +736,10 @@ private:
       status.prediction_errors[0] = isometry2pose(error.cast<double>());
     }
 
-    status_pub.publish(status);
+    status_pub->publish(status);
   }
 
-  void command_callback(const std_msgs::String& str_msg) {
+  void command_callback(const std_msgs::msg::String& str_msg) {
     if (str_msg.data == "time") {
       std::sort(s2s_matching_time.begin(), s2s_matching_time.end());
       double median = s2s_matching_time.at(size_t(s2s_matching_time.size() / 2));
@@ -699,18 +749,18 @@ private:
 
 private:
   // ROS topics
-  ros::NodeHandle nh;
-  ros::NodeHandle mt_nh;
-  ros::NodeHandle private_nh;
-
-  // ros::Subscriber points_sub;
-  ros::Subscriber msf_pose_sub;
-  ros::Subscriber msf_pose_after_update_sub;
-  ros::Subscriber imu_sub;
+  rclcpp::TimerBase::SharedPtr init_timer_;
+  // message filters subscribers
+  std::shared_ptr<message_filters::Subscriber<geometry_msgs::msg::TwistWithCovarianceStamped>> ego_vel_sub;
+  std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> points_sub;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr msf_pose_sub;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr msf_pose_after_update_sub;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub;
 
   std::mutex imu_queue_mutex;
-  std::deque<sensor_msgs::ImuConstPtr> imu_queue;
-  sensor_msgs::Imu last_frame_imu;
+  std::deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_queue;
+  sensor_msgs::msg::Imu last_frame_imu;
 
   bool enable_imu_fusion;
   bool imu_debug_out;
@@ -723,12 +773,10 @@ private:
     float imuPitch[imuQueLength];
     double imu_fusion_ratio;
 
-  std::unique_ptr<message_filters::Subscriber<geometry_msgs::TwistWithCovarianceStamped>> ego_vel_sub;
-  std::unique_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> points_sub;
   std::unique_ptr<message_filters::Synchronizer<ApproxSyncPolicy>> sync;
 
   // Submap
-  ros::Publisher submap_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr submap_pub;
   std::unique_ptr<KeyframeUpdater> keyframe_updater;
   std::vector<KeyFrame::Ptr> keyframes;
   size_t keyframe_index = 0;
@@ -739,14 +787,12 @@ private:
   // std::unique_ptr<GraphSLAM> graph_slam;
   // std::unique_ptr<InformationMatrixCalculator> inf_calclator;
   
-  ros::Publisher odom_pub;
-  ros::Publisher trans_pub;
-  // ros::Publisher keyframe_trans_pub;
-  ros::Publisher aligned_points_pub;
-  ros::Publisher status_pub;
-  ros::Publisher read_until_pub;
-  tf::TransformListener tf_listener;
-  tf::TransformBroadcaster map2odom_broadcaster; // map => odom_frame
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
+  rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr trans_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned_points_pub;
+  rclcpp::Publisher<radar_graph_slam::msg::ScanMatchingStatus>::SharedPtr status_pub;
+  rclcpp::Publisher<std_msgs::msg::Header>::SharedPtr read_until_pub;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> map2odom_broadcaster;
 
   std::string points_topic;
 
@@ -767,18 +813,18 @@ private:
   Eigen::Matrix4d last_radar_delta = Eigen::Matrix4d::Identity();
 
   // odometry calculation
-  geometry_msgs::PoseWithCovarianceStampedConstPtr msf_pose;
-  geometry_msgs::PoseWithCovarianceStampedConstPtr msf_pose_after_update;
+  geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msf_pose;
+  geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msf_pose_after_update;
 
   Eigen::Matrix4d egovel_cum = Eigen::Matrix4d::Identity();
   bool use_ego_vel;
 
-  ros::Time prev_time;
+  rclcpp::Time prev_time;
   Eigen::Matrix4d prev_trans_s2s;                  // previous relative transform from keyframe_
   Eigen::Matrix4d keyframe_pose_s2s;               // keyframe_ pose
   Eigen::Matrix4d prev_trans_s2m;
   Eigen::Matrix4d keyframe_pose_s2m;               // keyframe_ pose
-  ros::Time keyframe_stamp;                    // keyframe_ time
+  rclcpp::Time keyframe_stamp;                    // keyframe_ time
   pcl::PointCloud<PointT>::ConstPtr keyframe_cloud_s2s;  // keyframe_ point cloud
   pcl::PointCloud<PointT>::ConstPtr keyframe_cloud_s2m;  // keyframe_ point cloud
 
@@ -789,9 +835,9 @@ private:
 
   // Time evaluation
   std::vector<double> s2s_matching_time;
-  ros::Subscriber command_sub;
 };
 
 }  // namespace radar_graph_slam
 
-PLUGINLIB_EXPORT_CLASS(radar_graph_slam::ScanMatchingOdometryNodelet, nodelet::Nodelet)
+// PLUGINLIB_EXPORT_CLASS(radar_graph_slam::ScanMatchingOdometryNodelet, nodelet::msg::Nodelet)
+RCLCPP_COMPONENTS_REGISTER_NODE(radar_graph_slam::ScanMatchingOdometryNodelet)

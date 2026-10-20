@@ -1,4 +1,6 @@
 #include <radar_graph_slam/loop_detector.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
 
 using namespace std;
 
@@ -47,43 +49,48 @@ Eigen::Vector3d monoToRainbow(int value){
 
 namespace radar_graph_slam {
 
-LoopDetector::LoopDetector(ros::NodeHandle& pnh) {
-    enable_pf = pnh.param<bool>("enable_pf", true);
-    enable_odom_check = pnh.param<bool>("enable_odom_check", true);
+LoopDetector::LoopDetector(rclcpp::Node::SharedPtr node) {
+    // In ROS 2 nutzen wir node->declare_parameter<T>("name", default_value)
+    
+    enable_pf = node->declare_parameter<bool>("enable_pf", true);
+    enable_odom_check = node->declare_parameter<bool>("enable_odom_check", true);
 
-    distance_thresh = pnh.param<double>("distance_thresh", 5.0);
-    accum_distance_thresh = pnh.param<double>("accum_distance_thresh", 8.0);
-    min_loop_interval_dist = pnh.param<double>("min_loop_interval_dist", 5.0);
+    distance_thresh = node->declare_parameter<double>("distance_thresh", 5.0);
+    accum_distance_thresh = node->declare_parameter<double>("accum_distance_thresh", 8.0);
+    min_loop_interval_dist = node->declare_parameter<double>("min_loop_interval_dist", 5.0);
 
-    fitness_score_max_range = pnh.param<double>("fitness_score_max_range", std::numeric_limits<double>::max());
-    fitness_score_thresh = pnh.param<double>("fitness_score_thresh", 0.5);
+    fitness_score_max_range = node->declare_parameter<double>("fitness_score_max_range", std::numeric_limits<double>::max());
+    fitness_score_thresh = node->declare_parameter<double>("fitness_score_thresh", 0.5);
 
-    odom_drift_xy = pnh.param<double>("odometry_drift_xy", 0.05);
-    odom_drift_z = pnh.param<double>("odometry_drift_z", 0.20);
-    drift_scale_xy = pnh.param<double>("odometry_drift_scale_xy", 2.0);
-    drift_scale_z = pnh.param<double>("odometry_drift_scale_z", 2.0);
+    odom_drift_xy = node->declare_parameter<double>("odometry_drift_xy", 0.05);
+    odom_drift_z = node->declare_parameter<double>("odometry_drift_z", 0.20);
+    drift_scale_xy = node->declare_parameter<double>("odometry_drift_scale_xy", 2.0);
+    drift_scale_z = node->declare_parameter<double>("odometry_drift_scale_z", 2.0);
 
-    max_baro_difference = pnh.param<double>("max_baro_difference", 3.0);
-    max_yaw_difference = pnh.param<double>("max_yaw_difference", 45.0);
+    max_baro_difference = node->declare_parameter<double>("max_baro_difference", 3.0);
+    max_yaw_difference = node->declare_parameter<double>("max_yaw_difference", 45.0);
 
-    double sc_dist_thresh = pnh.param<double>("sc_dist_thresh", 0.3);
-    double sc_azimuth_range = pnh.param<double>("sc_azimuth_range", 0.3);
+    double sc_dist_thresh = node->declare_parameter<double>("sc_dist_thresh", 0.3);
+    double sc_azimuth_range = node->declare_parameter<double>("sc_azimuth_range", 0.3);
 
-    registration = select_registration_method(pnh);
+    // Diese Funktionen/Klassen müssen ebenfalls rclcpp::Node::SharedPtr akzeptieren
+    registration = select_registration_method(node);
 
     // Loop Closure Parameters
-    pnh.param<int>("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
-    historyKeyframeFitnessScore = pnh.param<float>("historyKeyframeFitnessScore", 6);
-    odom_check_trans_thresh = pnh.param<double>("odom_check_trans_thresh", 0.1);
-    odom_check_rot_thresh = pnh.param<double>("odom_check_rot_thresh", 0.05);
-    pairwise_check_trans_thresh = pnh.param<double>("pairwise_check_trans_thresh", 0.1);
-    pairwise_check_rot_thresh = pnh.param<double>("pairwise_check_rot_thresh", 0.05);
+    historyKeyframeSearchNum = node->declare_parameter<int>("lio_sam/historyKeyframeSearchNum", 25);
+    historyKeyframeFitnessScore = node->declare_parameter<float>("historyKeyframeFitnessScore", 6.0f);
+    odom_check_trans_thresh = node->declare_parameter<double>("odom_check_trans_thresh", 0.1);
+    odom_check_rot_thresh = node->declare_parameter<double>("odom_check_rot_thresh", 0.05);
+    pairwise_check_trans_thresh = node->declare_parameter<double>("pairwise_check_trans_thresh", 0.1);
+    pairwise_check_rot_thresh = node->declare_parameter<double>("pairwise_check_rot_thresh", 0.05);
 
-    scManager.reset(new SCManager());
-    inf_calclator.reset(new InformationMatrixCalculator(pnh));
-    image_transport.reset(new image_transport::ImageTransport(pnh));
-    pub_cur_sc = image_transport->advertise("/sc/cur",1);
-    pub_pre_sc = image_transport->advertise("/sc/pre",1);
+    scManager = std::make_unique<SCManager>();
+    inf_calclator = std::make_unique<InformationMatrixCalculator>(node);
+    
+    // ImageTransport in ROS 2
+    image_transport = std::make_unique<image_transport::ImageTransport>(node);
+    pub_cur_sc = image_transport->advertise("/sc/cur", 1);
+    pub_pre_sc = image_transport->advertise("/sc/pre", 1);
 
     scManager->setScDistThresh(sc_dist_thresh);
     scManager->setAzimuthRange(sc_azimuth_range);
@@ -194,7 +201,7 @@ Loop::Ptr LoopDetector::performScanContextLoopClosure(const std::vector<KeyFrame
     start_ms_sc = clock();
     if (candidate_keyframes.empty() == true){
         return nullptr;
-        // ROS_INFO("\033[33m Cannot find Loop Candidate \033[0m");
+        // RCLCPP_INFO(node->get_logger(),"\033[33m Cannot find Loop Candidate \033[0m");
     }
     std::cout << "\033[36m" << " New keyframe index: " << new_keyframe->index << ". " 
     << "Number of candidate frames: " << candidate_keyframes.size();
@@ -290,7 +297,7 @@ Loop::Ptr LoopDetector::performScanContextLoopClosure(const std::vector<KeyFrame
             cout << "T_err_ij_kl translation: " << T_err_ij_kl.translation().norm() << endl;
             double pcc_err_rot = rotation_vector.angle();
             if(pcc_err_trans > pairwise_check_trans_thresh || pcc_err_rot > pairwise_check_rot_thresh){
-            ROS_INFO("\033[31m Pairwise check invalid, Translation Error: %lf, rotation Error: %lf \033[0m", pcc_err_trans, pcc_err_rot);
+            RCLCPP_INFO(rclcpp::get_logger("radar_graph_slam.loop_detector"),"\033[31m Pairwise check invalid, Translation Error: %lf, rotation Error: %lf \033[0m", pcc_err_trans, pcc_err_rot);
             return nullptr;
             }
         }
@@ -306,9 +313,9 @@ Loop::Ptr LoopDetector::performScanContextLoopClosure(const std::vector<KeyFrame
     cv::Mat mat_pre_sc = makeSCImage(pre_sc);
     cv::Mat color_pre_sc = getColorImage(mat_pre_sc);
 
-    sensor_msgs::ImagePtr cur_img_msg=cv_bridge::CvImage(std_msgs::Header(),"bgr8",color_cur_sc).toImageMsg();
+    auto cur_img_msg = cv_bridge::CvImage(std_msgs::msg::Header(),"bgr8",color_cur_sc).toImageMsg();
     pub_cur_sc.publish(cur_img_msg);
-    sensor_msgs::ImagePtr pre_img_msg=cv_bridge::CvImage(std_msgs::Header(),"bgr8",color_pre_sc).toImageMsg();
+    auto pre_img_msg = cv_bridge::CvImage(std_msgs::msg::Header(),"bgr8",color_pre_sc).toImageMsg();
     pub_pre_sc.publish(pre_img_msg);
 
     // robust kernel for a SC loop
@@ -398,7 +405,8 @@ Loop::Ptr LoopDetector::matching(const std::vector<KeyFrame::Ptr>& candidate_key
     std::cout << "--- loop detection ---" << std::endl;
     std::cout << "num_candidates: " << candidate_keyframes.size() << std::endl;
     std::cout << "matching" << std::flush;
-    auto t1 = ros::Time::now();
+    // auto t1 = rclcpp::Time::now();
+    auto t1 = node->now();
 
     pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
     for(const auto& candidate : candidate_keyframes) {
@@ -422,9 +430,9 @@ Loop::Ptr LoopDetector::matching(const std::vector<KeyFrame::Ptr>& candidate_key
         relative_pose = registration->getFinalTransformation();
     }
 
-    auto t2 = ros::Time::now();
+    auto t2 = rclcpp::Time::now();
     std::cout << " done" << std::endl;
-    std::cout << "best_score: " << boost::format("%.3f") % best_score << "    time: " << boost::format("%.3f") % (t2 - t1).toSec() << "[sec]" << std::endl;
+    std::cout << "best_score: " << boost::format("%.3f") % best_score << "    time: " << boost::format("%.3f") % (t2 - t1).seconds() << "[sec]" << std::endl;
 
     if(best_score > fitness_score_thresh) {
         std::cout << "loop not found..." << std::endl;

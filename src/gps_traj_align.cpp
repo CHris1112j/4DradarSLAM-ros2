@@ -10,13 +10,15 @@
 
 #include <Eigen/Dense>
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/serialization.hpp> // Zwingend nötig für ROS 2 Bag Deserialisierung
 #include <geodesy/utm.h>
 #include <geodesy/wgs84.h>
-#include <rosbag/bag.h>
-#include <rosbag/view.h>
-#include <sensor_msgs/NavSatFix.h>
-#include <geographic_msgs/GeoPointStamped.h>
+#include <rosbag2_cpp/reader.hpp>
+#include <rosbag2_storage/storage_options.hpp>
+
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <geographic_msgs/msg/geo_point_stamped.hpp>
 #include <g2o/types/slam3d/edge_se3.h>
 #include <g2o/types/slam3d/vertex_se3.h>
 
@@ -40,10 +42,10 @@ std::vector<std::pair<int,int>> associate(std::vector<double> first_stamps, std:
     //                      for idx_b, b in enumerate(second_stamps)
     //                      if abs(a - (b + offset)) < max_difference]
     std::vector<std::pair<int,int>> potential_matches;
-    for (int i=0; i < first_stamps.size(); i++){
-        for (int j; j < second_stamps.size(); j++){
-            double& a = first_stamps.at(i);
-            double& b = second_stamps.at(j);
+    for (size_t i = 0; i < first_stamps.size(); i++){
+        for (size_t j = 0; j < second_stamps.size(); j++){
+            const double& a = first_stamps.at(i);
+            const double& b = second_stamps.at(j);
             if (abs(a - (b + offset)) < max_difference)
                 potential_matches.push_back(std::pair<int,int>(i,j));
         }
@@ -93,16 +95,24 @@ std::vector<std::pair<int,int>> associate(std::vector<double> first_stamps, std:
     return potential_matches;
 }
 
-void read_topic_from_rosbag(rosbag::View::iterator& iter, rosbag::View& viewer, std::vector<sensor_msgs::NavSatFix::Ptr>& msgs_queue){
-    for (; iter != viewer.end(); ++iter)
-    {
-        // Get a frame of data
-        auto m = *iter;
-        std::string topic = m.getTopic();
-        if (topic == "/ublox/fix")
-        {
-            sensor_msgs::NavSatFix::Ptr navsat_msg = m.instantiate<sensor_msgs::NavSatFix>();
-            // cout << "/ublox/fix   " << setprecision(19) << navsat_msg->header.stamp.toSec() << endl;
+// Kein rosbag::View->rosbag2_cpp::Reader
+// Kein .instantiate<T>()
+// sensor_msgs::NavSatFix::Ptr -> sensor_msgs::msg::NavSatFix::SharedPtr
+
+void read_topic_from_rosbag(const std::string& bag_path, std::vector<sensor_msgs::msg::NavSatFix::SharedPtr>& msgs_queue) {
+    rosbag2_cpp::Reader reader;
+    reader.open(bag_path);
+
+    rclcpp::Serialization<sensor_msgs::msg::NavSatFix> serialization;
+
+    while (reader.has_next()) {
+        rosbag2_storage::SerializedBagMessageSharedPtr msg = reader.read_next();
+        
+        if (msg->topic_name == "/ublox/fix") {
+            rclcpp::SerializedMessage serialized_msg(*msg->serialized_data);
+            auto navsat_msg = std::make_shared<sensor_msgs::msg::NavSatFix>();
+            serialization.deserialize_message(&serialized_msg, navsat_msg.get());
+            
             msgs_queue.push_back(navsat_msg);
         }
     }
@@ -116,48 +126,23 @@ int main()
         return 0;
     }
 
-    rosbag::Bag bag0, bag1, bag2, bag3;
-    // bag0.open("/home/zhuge/datasets/Radar/ntu_loop2_car/ntu-car-day-loop2_2022-06-03_0.bag", rosbag::bagmode::Read);
-    // bag1.open("/home/zhuge/datasets/Radar/ntu_loop2_car/ntu-car-day-loop2_2022-06-03_1.bag", rosbag::bagmode::Read);
-    // bag2.open("/home/zhuge/datasets/Radar/ntu_loop2_car/ntu-car-day-loop2_2022-06-03_2.bag", rosbag::bagmode::Read);
-    // bag3.open("/home/zhuge/datasets/Radar/ntu_loop2_car/ntu-car-day-loop2_2022-06-03_3.bag", rosbag::bagmode::Read);
+    std::vector<sensor_msgs::msg::NavSatFix::SharedPtr> navsat_msgs;
 
-    bag0.open("/home/zhuge/datasets/Radar/ntu_loop3_car/ntu-car-day-loop3_2022-06-03_0.bag", rosbag::bagmode::Read);
-    bag1.open("/home/zhuge/datasets/Radar/ntu_loop3_car/ntu-car-day-loop3_2022-06-03_1.bag", rosbag::bagmode::Read);
-    bag2.open("/home/zhuge/datasets/Radar/ntu_loop3_car/ntu-car-day-loop3_2022-06-03_2.bag", rosbag::bagmode::Read);
-
-    std::vector<std::string> topics;
-    topics.push_back(std::string("/ublox/fix"));
-
-    rosbag::View view_0(bag0, rosbag::TopicQuery(topics));
-    rosbag::View view_1(bag1, rosbag::TopicQuery(topics));
-    rosbag::View view_2(bag2, rosbag::TopicQuery(topics));
-    // rosbag::View view_3(bag3, rosbag::TopicQuery(topics));
-    // Using iterators to iterate
-    rosbag::View::iterator it_0 = view_0.begin();
-    rosbag::View::iterator it_1 = view_1.begin();
-    rosbag::View::iterator it_2 = view_2.begin();
-    // rosbag::View::iterator it_3 = view_3.begin();
-
-    std::vector<sensor_msgs::NavSatFix::Ptr> navsat_msgs;
-    read_topic_from_rosbag(it_0, view_0, navsat_msgs);
-    read_topic_from_rosbag(it_1, view_1, navsat_msgs);
-    read_topic_from_rosbag(it_2, view_2, navsat_msgs);
-    // read_topic_from_rosbag(it_3, view_3, navsat_msgs);
+    // In ROS 2 iterieren wir direkt über die Dateipfade
+    read_topic_from_rosbag("/home/zhuge/datasets/Radar/ntu_loop3_car/ntu-car-day-loop3_2022-06-03_0.bag", navsat_msgs);
+    read_topic_from_rosbag("/home/zhuge/datasets/Radar/ntu_loop3_car/ntu-car-day-loop3_2022-06-03_1.bag", navsat_msgs);
+    read_topic_from_rosbag("/home/zhuge/datasets/Radar/ntu_loop3_car/ntu-car-day-loop3_2022-06-03_2.bag", navsat_msgs);
 
     cout << "The Number of navsat message in bag is " << navsat_msgs.size() << endl;
-    bag0.close();
-    bag1.close();
-    bag2.close();
-    // bag3.close();
 
     std::vector<Eigen::Vector3d> utm_coordinates;
     std::vector<double> utm_stamps;
     std::vector<Eigen::Vector3d> utm_covariences;
-    for (int i; i < navsat_msgs.size(); i++){
+    for (size_t i = 0; i < navsat_msgs.size(); i++) {
         if (navsat_msgs.at(i)->position_covariance.at(0) > 3 || navsat_msgs.at(i)->position_covariance.at(8) > 8)
                 continue;
-        geographic_msgs::GeoPointStampedPtr gps_msg(new geographic_msgs::GeoPointStamped());
+                
+        auto gps_msg = std::make_shared<geographic_msgs::msg::GeoPointStamped>();
         gps_msg->header = navsat_msgs.at(i)->header;
         gps_msg->position.latitude = navsat_msgs.at(i)->latitude;
         gps_msg->position.longitude = navsat_msgs.at(i)->longitude;
@@ -169,7 +154,8 @@ int main()
         Eigen::Vector3d cov(navsat_msgs.at(i)->position_covariance.at(0), navsat_msgs.at(i)->position_covariance.at(4), navsat_msgs.at(i)->position_covariance.at(8));
         utm_covariences.push_back(cov);
         utm_coordinates.push_back(xyz);
-        utm_stamps.push_back(navsat_msgs.at(i)->header.stamp.toSec());
+        double msg_time_sec = rclcpp::Time(navsat_msgs.at(i)->header.stamp).seconds();
+        utm_stamps.push_back(msg_time_sec);
     }
     cout << "The Number of chosen utm coordinate points is " << utm_coordinates.size() << endl;
     
@@ -229,7 +215,7 @@ int main()
     
     g2o::VertexSE3* node = graph_slam->add_se3_node(Eigen::Isometry3d::Identity());
 
-    for (int i=0; i < associated_pairs.size(); i++){
+    for (size_t i = 0; i < associated_pairs.size(); i++) {
         Eigen::Vector3d& gt = gt_coordinates.at(associated_pairs.at(i).first);
         Eigen::Vector3d& utm = utm_coordinates.at(associated_pairs.at(i).second);
         Eigen::Matrix3d information_matrix = Eigen::Matrix3d::Identity();

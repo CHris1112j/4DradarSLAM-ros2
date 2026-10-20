@@ -15,7 +15,7 @@
 
 #include <g2o/types/slam3d/vertex_se3.h>
 
-#include <image_transport/image_transport.h>
+#include <image_transport/image_transport.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <cv_bridge/cv_bridge.h>
 
@@ -48,7 +48,7 @@ public:
    * @param pnh
    */
   LoopDetector() {}
-  LoopDetector(ros::NodeHandle& pnh);
+  LoopDetector(rclcpp::Node::SharedPtr node);
   ~LoopDetector();
 
   std::vector<Loop::Ptr> detect(const std::vector<KeyFrame::Ptr>& keyframes, const std::deque<KeyFrame::Ptr>& new_keyframes, radar_graph_slam::GraphSLAM& graph_slam);

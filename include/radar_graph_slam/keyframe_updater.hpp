@@ -3,10 +3,10 @@
 #ifndef KEYFRAME_UPDATER_HPP
 #define KEYFRAME_UPDATER_HPP
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <Eigen/Dense>
 
-#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 namespace radar_graph_slam {
 
@@ -21,11 +21,16 @@ public:
    * @brief constructor
    * @param pnh
    */
-  KeyframeUpdater(ros::NodeHandle& pnh) : is_first(true), prev_keypose(Eigen::Isometry3d::Identity()) {
-    keyframe_delta_trans = pnh.param<double>("keyframe_delta_trans", 2.0);
-    keyframe_delta_angle = pnh.param<double>("keyframe_delta_angle", 2.0);
-    // keyframe_delta_time = pnh.param<double>("keyframe_delta_time", 2.0);
-    keyframe_min_size = pnh.param<int>("keyframe_min_size", 1000);
+  KeyframeUpdater(rclcpp::Node::SharedPtr pnh) : is_first(true), prev_keypose(Eigen::Isometry3d::Identity()) {
+    auto declare_get = [&](const std::string& name, auto default_val) {
+        if (!pnh->has_parameter(name))
+            pnh->declare_parameter(name, default_val);
+        return pnh->get_parameter(name).get_value<decltype(default_val)>();
+    };
+    keyframe_delta_trans = declare_get("keyframe_delta_trans", 2.0);
+    keyframe_delta_angle = declare_get("keyframe_delta_angle", 2.0);
+    // keyframe_delta_time = declare_get("keyframe_delta_time", 2.0);
+    keyframe_min_size = declare_get("keyframe_min_size", 1000);
 
     accum_distance = 0.0;
   }
@@ -35,12 +40,12 @@ public:
    * @param pose  pose of the frame
    * @return  if true, the frame should be registered
    */
-  bool decide(const Eigen::Isometry3d& pose, const ros::Time& stamp) {
+  bool decide(const Eigen::Isometry3d& pose, const rclcpp::Time& stamp) {
     // first frame is always registered to the graph
     if(is_first) {
       is_first = false;
       prev_keypose = pose;
-      prev_keytime = stamp.toSec();
+      prev_keytime = stamp.seconds();
       return true;
     }
     
@@ -48,7 +53,7 @@ public:
     Eigen::Isometry3d delta = prev_keypose.inverse() * pose;
     double dx = delta.translation().norm();
     double da = Eigen::AngleAxisd(delta.linear()).angle();
-    // double dt = stamp.toSec() - prev_keytime;
+    // double dt = stamp.seconds()() - prev_keytime;
 
     // too close to the previous frame
     if((dx < keyframe_delta_trans && da < keyframe_delta_angle)) {
@@ -57,7 +62,7 @@ public:
 
     accum_distance += dx;
     prev_keypose = pose;
-    prev_keytime = stamp.toSec();
+    prev_keytime = stamp.seconds();
 
     return true;
   }

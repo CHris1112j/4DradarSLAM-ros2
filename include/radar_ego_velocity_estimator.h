@@ -17,7 +17,7 @@
 
 #pragma once
  
-#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <rio_utils/data_types.h>
 #include <rio_utils/ros_helper.h>
@@ -103,12 +103,12 @@ public:
    * @param[out] inlier_radar_scan   inlier point cloud
    * @returns true if estimation successful
    */
-  bool estimate(const sensor_msgs::PointCloud2& radar_scan_msg, Vector3& v_r, Vector3& sigma_v_r);
-  bool estimate(const sensor_msgs::PointCloud2& radar_scan_msg,
+  bool estimate(const sensor_msgs::msg::PointCloud2& radar_scan_msg, Vector3& v_r, Vector3& sigma_v_r);
+  bool estimate(const sensor_msgs::msg::PointCloud2& radar_scan_msg,
                 Vector3& v_r,
                 Vector3& sigma_v_r,
-                sensor_msgs::PointCloud2& inlier_radar_msg,
-                sensor_msgs::PointCloud2& outlier_radar_msg);
+                sensor_msgs::msg::PointCloud2& inlier_radar_msg,
+                sensor_msgs::msg::PointCloud2& outlier_radar_msg);
 
 private:
   /**
@@ -139,7 +139,7 @@ private:
   {
     ransac_iter_ = uint((std::log(1.0 - config_.success_prob)) /
                         std::log(1.0 - std::pow(1.0 - config_.outlier_prob, config_.N_ransac_points)));
-    ROS_INFO_STREAM(kPrefix << "Number of Ransac iterations: " << ransac_iter_);
+    RCLCPP_INFO_STREAM(rclcpp::get_logger("radar_ego_vel"), kPrefix << "Number of Ransac iterations: " << ransac_iter_);
   }
 
   const std::string kPrefix = "[RadarEgoVelocityEstimator]: ";
@@ -183,7 +183,7 @@ bool RadarEgoVelocityEstimator::configure(ConfigContainingRadarEgoVelocityEstima
 
   setRansacIter();
 
-  ROS_INFO_STREAM(kPrefix << "Number of Ransac iterations: " << ransac_iter_);
+  RCLCPP_INFO_STREAM(rclcpp::get_logger("radar_ego_vel"), kPrefix << "Number of Ransac iterations: " << ransac_iter_);
   return true;
 }
 }  // namespace rio

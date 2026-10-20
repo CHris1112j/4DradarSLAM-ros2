@@ -16,7 +16,8 @@
 
 #pragma once
 
-#include <ros/node_handle.h>
+#include <rclcpp/rclcpp.hpp>
+#include <string>
 
 namespace rio
 {
@@ -28,34 +29,61 @@ enum class RosParameterType
 };
 
 template <typename T>
-static bool getRosParameter(const ros::NodeHandle& nh,
-                            const std::string kPrefix,
+static bool getRosParameter(const rclcpp::Node::SharedPtr& nh,
+                            const std::string& kPrefix,
                             const RosParameterType& param_type,
                             const std::string& param_name,
                             T& param)
 {
-  if (!nh.getParam(param_name, param))
+  // 1. Prüfen, ob der Parameter bereits deklariert wurde oder durch den Nutzer 
+  // (via Launch-File oder Terminal) überschrieben wurde.
+  bool is_configured = false;
+  auto overrides = nh->get_node_parameters_interface()->get_parameter_overrides();
+  
+  if (overrides.find(param_name) != overrides.end() || nh->has_parameter(param_name)) {
+    is_configured = true;
+  }
+
+  // 2. Warnungen ausgeben, falls der Parameter fehlt
+  if (!is_configured)
   {
     if (param_type == RosParameterType::Optional)
     {
-      ROS_INFO_STREAM(kPrefix << "<" << param_name
+      RCLCPP_INFO_STREAM(nh->get_logger(), kPrefix << "<" << param_name
                               << "> is optional but not configured. Using default value: " << param);
-      nh.setParam(param_name, param);
     }
     else if (param_type == RosParameterType::Recommended)
     {
-      ROS_WARN_STREAM(kPrefix << "<" << param_name
-                              << "> is recommeded but not configured. Using default value: " << param);
-      nh.setParam(param_name, param);
+      RCLCPP_WARN_STREAM(nh->get_logger(), kPrefix << "<" << param_name
+                              << "> is recommended but not configured. Using default value: " << param);
     }
     else
     {
-      ROS_ERROR_STREAM(kPrefix << "<" << param_name << "> is required but not configured. Exiting!");
+      RCLCPP_ERROR_STREAM(nh->get_logger(), kPrefix << "<" << param_name << "> is required but not configured. Exiting!");
       return false;
     }
   }
 
+  // 3. In ROS 2 MÜSSEN Parameter deklariert werden. 
+  // Wenn der Parameter nicht übergeben wurde, wird er hier mit dem Default-Wert aus 'param' initialisiert.
+  if (!nh->has_parameter(param_name)) {
+    nh->declare_parameter<T>(param_name, param);
+  }
+
+  // 4. Den finalen Wert in die Referenz-Variable schreiben
+  nh->get_parameter(param_name, param);
+
   return true;
 }
+
+// bool getRosParameter(const rclcpp::Node::SharedPtr& nh, const std::string& param_name, const T& default_value, T& param)
+// {
+//     // In ROS 2 we declare and get parameters. 
+//     // If it's already declared, we just get it.
+//     if (!nh->has_parameter(param_name)) {
+//         nh->declare_parameter<T>(param_name, default_value);
+//     }
+//     return nh->get_parameter(param_name, param);
+// }
 
 }  // namespace rio

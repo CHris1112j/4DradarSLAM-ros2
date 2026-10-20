@@ -4,7 +4,7 @@
 #define GRAPH_SLAM_HPP
 
 #include <memory>
-#include <ros/time.h>
+#include <rclcpp/time.hpp>
 
 #include <g2o/core/hyper_graph.h>
 

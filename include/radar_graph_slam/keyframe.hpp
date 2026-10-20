@@ -3,13 +3,13 @@
 #ifndef KEYFRAME_HPP
 #define KEYFRAME_HPP
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 #include <boost/optional.hpp>
 
-#include <geometry_msgs/Transform.h>
-#include <sensor_msgs/Imu.h>
+#include <geometry_msgs/msg/transform.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 
 #include <g2o/edge_se3_priorz.hpp>
 
@@ -30,7 +30,7 @@ public:
   using PointT = pcl::PointXYZI;
   using Ptr = std::shared_ptr<KeyFrame>;
 
-  KeyFrame(const size_t index, const ros::Time& stamp, const Eigen::Isometry3d& odom_scan2scan, double accum_distance, const pcl::PointCloud<PointT>::ConstPtr& cloud);
+  KeyFrame(const size_t index, const rclcpp::Time& stamp, const Eigen::Isometry3d& odom_scan2scan, double accum_distance, const pcl::PointCloud<PointT>::ConstPtr& cloud);
   KeyFrame(const std::string& directory, g2o::HyperGraph* graph);
   virtual ~KeyFrame();
 
@@ -42,7 +42,7 @@ public:
 
 public:
   size_t index;
-  ros::Time stamp;                                // timestamp
+  rclcpp::Time stamp;                                // timestamp
   Eigen::Isometry3d odom_scan2scan;               // odometry (estimated by scan_matching_odometry)
   Eigen::Isometry3d odom_scan2map;
   double accum_distance;                          // accumulated distance from the first node (by scan_matching_odometry)
@@ -54,9 +54,9 @@ public:
   boost::optional<Eigen::Vector3d> acceleration;    //
   boost::optional<Eigen::Quaterniond> orientation;  //
 
-  geometry_msgs::Transform trans_integrated; // relative transform obtained by imu preintegration
+  geometry_msgs::msg::Transform trans_integrated; // relative transform obtained by imu preintegration
 
-  boost::optional<sensor_msgs::Imu> imu; // the IMU message close to keyframe_
+  boost::optional<sensor_msgs::msg::Imu> imu; // the IMU message close to keyframe_
 
   g2o::VertexSE3* node;  // node instance
 };

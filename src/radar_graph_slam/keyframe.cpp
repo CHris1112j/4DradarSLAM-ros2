@@ -2,7 +2,8 @@
 
 #include <radar_graph_slam/keyframe.hpp>
 
-#include <boost/filesystem.hpp>
+#include <filesystem>
+#include <fstream>
 
 #include <pcl/io/pcd_io.h>
 #include <g2o/core/sparse_optimizer.h>
@@ -10,7 +11,7 @@
 
 namespace radar_graph_slam {
 
-KeyFrame::KeyFrame(const size_t index, const ros::Time& stamp, const Eigen::Isometry3d& odom_scan2scan, double accum_distance, const pcl::PointCloud<PointT>::ConstPtr& cloud) : 
+KeyFrame::KeyFrame(const size_t index, const rclcpp::Time& stamp, const Eigen::Isometry3d& odom_scan2scan, double accum_distance, const pcl::PointCloud<PointT>::ConstPtr& cloud) : 
   index(index), stamp(stamp), odom_scan2scan(odom_scan2scan), accum_distance(accum_distance), cloud(cloud), node(nullptr) {}
 
 KeyFrame::KeyFrame(const std::string& directory, g2o::HyperGraph* graph) : stamp(), odom_scan2scan(Eigen::Isometry3d::Identity()), accum_distance(-1), cloud(nullptr), node(nullptr) {
@@ -20,12 +21,13 @@ KeyFrame::KeyFrame(const std::string& directory, g2o::HyperGraph* graph) : stamp
 KeyFrame::~KeyFrame() {}
 
 void KeyFrame::save(const std::string& directory) {
-  if(!boost::filesystem::is_directory(directory)) {
-    boost::filesystem::create_directory(directory);
+  namespace fs = std::filesystem;
+  if(!fs::is_directory(directory)) {
+    fs::create_directory(directory);
   }
 
   std::ofstream ofs(directory + "/data");
-  ofs << "stamp " << stamp.sec << " " << stamp.nsec << "\n";
+  ofs << "stamp " << stamp.seconds() << " " << stamp.nanoseconds() << "\n";
 
   ofs << "estimate\n";
   ofs << node->estimate().matrix() << "\n";
@@ -56,6 +58,7 @@ void KeyFrame::save(const std::string& directory) {
   }
 
   pcl::io::savePCDFileBinary(directory + "/cloud.pcd", *cloud);
+
 }
 
 bool KeyFrame::load(const std::string& directory, g2o::HyperGraph* graph) {
@@ -70,9 +73,10 @@ bool KeyFrame::load(const std::string& directory, g2o::HyperGraph* graph) {
   while(!ifs.eof()) {
     std::string token;
     ifs >> token;
-
     if(token == "stamp") {
-      ifs >> stamp.sec >> stamp.nsec;
+      uint32_t sec, nsec;
+      ifs >> sec >> nsec;
+      stamp = rclcpp::Time(sec, nsec);
     } else if(token == "estimate") {
       Eigen::Matrix4d mat;
       for(int i = 0; i < 4; i++) {
@@ -117,20 +121,22 @@ bool KeyFrame::load(const std::string& directory, g2o::HyperGraph* graph) {
     }
   }
 
+  auto logger = rclcpp::get_logger("keyframe");
+
   if(node_id < 0) {
-    ROS_ERROR_STREAM("invalid node id!!");
-    ROS_ERROR_STREAM(directory);
+    RCLCPP_ERROR_STREAM(logger, "invalid node id!!");
+    RCLCPP_ERROR_STREAM(logger, directory);
     return false;
   }
 
   if(graph->vertices().find(node_id) == graph->vertices().end()) {
-    ROS_ERROR_STREAM("vertex ID=" << node_id << " does not exist!!");
+    RCLCPP_ERROR_STREAM(logger, "vertex ID=" << node_id << " does not exist!!");
     return false;
   }
 
   node = dynamic_cast<g2o::VertexSE3*>(graph->vertices()[node_id]);
   if(node == nullptr) {
-    ROS_ERROR_STREAM("failed to downcast!!");
+    RCLCPP_ERROR_STREAM(logger, "failed to downcast!!");
     return false;
   }
 
@@ -139,23 +145,26 @@ bool KeyFrame::load(const std::string& directory, g2o::HyperGraph* graph) {
   }
 
   pcl::PointCloud<PointT>::Ptr cloud_(new pcl::PointCloud<PointT>());
-  pcl::io::loadPCDFile(directory + "/cloud.pcd", *cloud_);
+  if (pcl::io::loadPCDFile(directory + "/cloud.pcd", *cloud_) == -1) {
+    RCLCPP_ERROR_STREAM(logger, "Failed to load cloud.pcd!!");
+    return false;
+  }
   cloud = cloud_;
 
   return true;
 }
 
 long KeyFrame::id() const {
-  return node->id();
+  return node ? node->id() : -1; // FIX: Sicherer Zugriff
 }
 
 Eigen::Isometry3d KeyFrame::estimate() const {
-  return node->estimate();
+  return node ? node->estimate() : Eigen::Isometry3d::Identity(); // FIX: Sicherer Zugriff
 }
 
 KeyFrameSnapshot::KeyFrameSnapshot(const Eigen::Isometry3d& pose, const pcl::PointCloud<PointT>::ConstPtr& cloud) : pose(pose), cloud(cloud) {}
 
-KeyFrameSnapshot::KeyFrameSnapshot(const KeyFrame::Ptr& key) : pose(key->node->estimate()), cloud(key->cloud) {}
+KeyFrameSnapshot::KeyFrameSnapshot(const KeyFrame::Ptr& key) : pose(key->node ? key->node->estimate() : Eigen::Isometry3d::Identity()), cloud(key->cloud) {}
 
 KeyFrameSnapshot::~KeyFrameSnapshot() {}
 

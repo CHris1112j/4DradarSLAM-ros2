@@ -28,6 +28,7 @@
 #include <g2o/edge_plane_parallel.hpp>
 #include <g2o/robust_kernel_io.hpp>
 #include <g2o/edge_se3_gt_utm.hpp>
+#include <rclcpp/rclcpp.hpp>
 
 G2O_USE_OPTIMIZATION_LIBRARY(pcg)
 G2O_USE_OPTIMIZATION_LIBRARY(cholmod)  // be aware of that cholmod brings GPL dependency
@@ -369,14 +370,14 @@ int GraphSLAM::optimize(int num_iterations) {
   double chi2 = graph->chi2();
 
   std::cout << "optimizing!!" << std::endl;
-  auto t1 = ros::WallTime::now();
+  auto t1 = std::chrono::steady_clock::now();
   int iterations = graph->optimize(num_iterations);
 
-  auto t2 = ros::WallTime::now();
+  auto t2 = std::chrono::steady_clock::now();
   std::cout << "done" << std::endl;
   std::cout << "iterations: " << iterations << " / " << num_iterations << std::endl;
   std::cout << "chi2: (before)" << chi2 << " -> (after)" << graph->chi2() << std::endl;
-  std::cout << "time: " << boost::format("%.3f") % (t2 - t1).toSec() << "[sec]" << std::endl;
+  std::cout << "time: " << boost::format("%.3f") % std::chrono::duration<double>(t2 - t1).count() << "[sec]" << std::endl;
 
   return iterations;
 }
